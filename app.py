@@ -14,7 +14,7 @@ MAPBOX_KEY = st.secrets["MAPBOX_API_KEY"]
 # Input Form
 with st.form("input_form"):
     st.write("### Zip Code Search")
-    zip_input = st.text_input("Enter Zip Codes (separate by commas)", value="99223, 99203")
+    zip_input = st.text_input("Enter Zip Codes (separate by commas)", value="")
     
     col1, col2, col3 = st.columns(3)
     with col1: date_1 = st.date_input("Date Option 1", value=None)
