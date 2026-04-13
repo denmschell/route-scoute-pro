@@ -30,44 +30,51 @@ if submit:
     if not zip_list:
         st.error("Please enter at least one Zip Code.")
     else:
-        with st.spinner("Step 1: Finding Houses... Step 2: Extracting Times & Agents..."):
+        with st.spinner("Finding houses and extracting schedules... this takes ~10 seconds."):
             try:
                 houses = []
                 valid_coords = []
-                
+                debug_deep_info = [] # To capture raw data for fixing N/A
+
                 for zcode in zip_list:
-                    url = "https://real-estate101.p.rapidapi.com/api/search"
+                    search_url = "https://real-estate101.p.rapidapi.com/api/search"
                     headers = {"x-rapidapi-host": "real-estate101.p.rapidapi.com", "x-rapidapi-key": RAPID_KEY}
-                    params = {"location": zcode, "isOpenHousesOnly": "true"}
-                    
-                    search_resp = requests.get(url, headers=headers, params=params)
+                    search_resp = requests.get(search_url, headers=headers, params={"location": zcode, "isOpenHousesOnly": "true"})
                     
                     if search_resp.status_code == 200:
                         results = search_resp.json().get("results", [])
                         
-                        # We process the first 10 results to keep it fast and safe
+                        # Process first 10 for speed
                         for item in results[:10]:
                             zillow_url = item.get("detailUrl")
                             
-                            # DEEP DIVE: Get Times and Brokerage
+                            # DEEP DIVE call
                             info_url = "https://real-estate101.p.rapidapi.com/api/search/byurl"
                             info_resp = requests.get(info_url, headers=headers, params={"url": zillow_url})
                             
-                            # Respect API limits
-                            time.sleep(1) 
+                            time.sleep(0.5) # Slight delay to be safe
 
-                            start_t, end_t, broker = "N/A", "N/A", "N/A"
+                            start_t, end_t, agent_broker = "N/A", "N/A", "N/A"
                             
                             if info_resp.status_code == 200:
                                 details = info_resp.json()
-                                # Extract times from schedule
-                                schedule = details.get("openHouseSchedule", [])
-                                if schedule:
+                                if not debug_deep_info: debug_deep_info.append(details) # Grab first house for debug
+                                
+                                # AGGRESSIVE TIME SEARCH
+                                # Checking all common Zillow scraper keys
+                                schedule = details.get("openHouseSchedule", details.get("openHouses", []))
+                                if not schedule and "resoFacts" in details:
+                                    schedule = details["resoFacts"].get("openHouseSchedule", [])
+                                
+                                if schedule and isinstance(schedule, list):
                                     start_t = schedule[0].get("startTime", "N/A")
                                     end_t = schedule[0].get("endTime", "N/A")
-                                
-                                # Extract Brokerage/Agent
-                                broker = details.get("brokerageName", details.get("attributionInfo", {}).get("brokerName", "N/A"))
+
+                                # AGGRESSIVE AGENT/BROKER SEARCH
+                                attr = details.get("attributionInfo", {})
+                                agent_broker = details.get("brokerageName", details.get("brokerName", "N/A"))
+                                if agent_broker == "N/A":
+                                    agent_broker = attr.get("brokerName", attr.get("agentName", "N/A"))
 
                             addr = item.get("address", {})
                             full_addr = f"{addr.get('street')}, {addr.get('city')}, {addr.get('state')} {addr.get('zipcode')}"
@@ -81,22 +88,28 @@ if submit:
                                     "Address": full_addr,
                                     "Price": item.get("price", "N/A"),
                                     "DOM": item.get("daysOnZillow", "N/A"),
-                                    "Agent/Brokerage": broker
+                                    "Agent/Brokerage": agent_broker
                                 })
                 
                 if houses:
-                    # Mapbox Routing
+                    # FIX: Correct Mapbox Waypoint Sequencing
                     if len(valid_coords) > 1:
                         route_url = f"https://api.mapbox.com/optimized-trips/v1/mapbox/driving/{';'.join(valid_coords[:12])}?access_token={MAPBOX_KEY}"
                         r_resp = requests.get(route_url)
                         if r_resp.status_code == 200:
+                            # Waypoints are returned in the OPTIMIZED order
                             waypoints = r_resp.json().get("waypoints", [])
-                            houses = [houses[wp['waypoint_index']] for wp in sorted(waypoints, key=lambda x: x['waypoint_index'])]
-                            st.success("Full data extracted and route optimized!")
+                            # Map original house data to its new optimized position
+                            houses = [houses[wp['waypoint_index']] for wp in waypoints]
+                            st.success("Route perfectly optimized!")
 
                     st.dataframe(pd.DataFrame(houses), use_container_width=True)
                 else:
-                    st.warning("No open houses found.")
+                    st.warning("No open houses found in these zip codes.")
+
+                with st.expander("🛠️ Deep Debug (Raw Data for 1st House)"):
+                    st.write("If you see N/A above, paste this data for me to inspect:")
+                    st.json(debug_deep_info)
 
             except Exception as e:
                 st.error(f"Error: {e}")
