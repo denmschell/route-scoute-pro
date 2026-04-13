@@ -77,4 +77,72 @@ if submit:
                                     # Convert the entire property dump to a string to aggressively check for dates
                                     info_str = json.dumps(info_data).lower()
                                     
-                                    if not selected_dates or any(target_date in
+                                    if not selected_dates or any(target_date in info_str for target_date in selected_dates):
+                                        date_matches = True
+                                        
+                                # If the date matches OR no dates were selected
+                                if date_matches: 
+                                    addr_dict = item.get("address", {})
+                                    full_address = f"{addr_dict.get('street', '')}, {addr_dict.get('city', '')}, {addr_dict.get('state', '')} {addr_dict.get('zipcode', '')}".strip(", ")
+                                    
+                                    price = item.get("price", "N/A")
+                                    dom = item.get("daysOnZillow", "N/A")
+                                    
+                                    lat_long = item.get("latLong", {})
+                                    lat = lat_long.get("latitude")
+                                    lon = lat_long.get("longitude")
+                                    
+                                    if lat and lon:
+                                        coord_str = f"{lon},{lat}"
+                                        if coord_str not in valid_coords: 
+                                            valid_coords.append(coord_str)
+                                            
+                                            houses.append({
+                                                "Start Time": start_time,
+                                                "End Time": end_time,
+                                                "Address": full_address,
+                                                "Saves/Likes": "N/A",
+                                                "DOM": dom,
+                                                "Current Price": price,
+                                                "Agent & Brokerage": "N/A"
+                                            })
+                
+                if houses:
+                    st.success(f"Extracted {len(houses)} Open Houses!")
+                    
+                    # Call 3: Optimize Route using Mapbox API
+                    if len(valid_coords) > 1 and len(valid_coords) <= 12:
+                        coord_string = ";".join(valid_coords)
+                        mapbox_url = f"https://api.mapbox.com/optimized-trips/v1/mapbox/driving/{coord_string}?access_token={MAPBOX_KEY}"
+                        
+                        route_resp = requests.get(mapbox_url)
+                        if route_resp.status_code == 200:
+                            route_data = route_resp.json()
+                            waypoints = route_data.get("waypoints", [])
+                            sorted_houses = [None] * len(houses)
+                            
+                            for idx, wp in enumerate(waypoints):
+                                original_index = wp.get("waypoint_index")
+                                sorted_houses[original_index] = houses[idx]
+                                
+                            houses = [h for h in sorted_houses if h is not None]
+                            st.success("Route perfectly optimized!")
+                        else:
+                            st.warning("Mapbox routing failed. Displaying unoptimized list.")
+
+                    # Output Table & CSV
+                    df = pd.DataFrame(houses)
+                    st.dataframe(df, use_container_width=True)
+                    
+                    csv = df.to_csv(index=False).encode('utf-8')
+                    st.download_button("Download Route as CSV", data=csv, file_name="route_scoute_optimized.csv", mime="text/csv")
+                else:
+                    st.warning("No open houses matched your exact date selections.")
+
+                # DEBUG EXPANDER RESTORED
+                with st.expander("🛠️ Debug: Show Raw API Data (Click to Expand)"):
+                    st.write("This is the deep property info from the API. Please copy a chunk of this so I can see the exact time format:")
+                    st.json(raw_info_responses)
+
+            except Exception as e:
+                st.error(f"An error occurred: {e}")
