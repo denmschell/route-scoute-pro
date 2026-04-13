@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import json
+import time
 
 # Page Config
 st.set_page_config(page_title="Route Scoute Pro", layout="wide")
@@ -11,7 +12,6 @@ st.title("Route Scoute Pro 🚗")
 RAPID_KEY = st.secrets["RAPID_API_KEY"]
 MAPBOX_KEY = st.secrets["MAPBOX_API_KEY"]
 
-# Input Form
 with st.form("input_form"):
     st.write("### Zip Code Search")
     zip_input = st.text_input("Enter Zip Codes (separate by commas)", value="")
@@ -21,7 +21,7 @@ with st.form("input_form"):
     with col2: date_2 = st.date_input("Date Option 2", value=None)
     with col3: date_3 = st.date_input("Date Option 3", value=None)
     
-    submit = st.form_submit_button("Generate Zip-Specific Route")
+    submit = st.form_submit_button("Generate Full Data Route")
 
 if submit:
     zip_list = [z.strip() for z in zip_input.split(",") if z.strip()]
@@ -30,65 +30,73 @@ if submit:
     if not zip_list:
         st.error("Please enter at least one Zip Code.")
     else:
-        with st.spinner("Searching specific Zip Codes for Open Houses..."):
+        with st.spinner("Step 1: Finding Houses... Step 2: Extracting Times & Agents..."):
             try:
                 houses = []
                 valid_coords = []
                 
                 for zcode in zip_list:
-                    # Search endpoint using the Zip Code directly
                     url = "https://real-estate101.p.rapidapi.com/api/search"
-                    headers = {
-                        "x-rapidapi-host": "real-estate101.p.rapidapi.com", 
-                        "x-rapidapi-key": RAPID_KEY
-                    }
-                    # Force the API to only look at the Zip Code and only Open Houses
-                    params = {"location": zcode, "isOpenHousesOnly": "true", "status_type": "ForSale"}
+                    headers = {"x-rapidapi-host": "real-estate101.p.rapidapi.com", "x-rapidapi-key": RAPID_KEY}
+                    params = {"location": zcode, "isOpenHousesOnly": "true"}
                     
-                    response = requests.get(url, headers=headers, params=params)
+                    search_resp = requests.get(url, headers=headers, params=params)
                     
-                    if response.status_code == 200:
-                        results = response.json().get("results", [])
+                    if search_resp.status_code == 200:
+                        results = search_resp.json().get("results", [])
                         
-                        for item in results:
-                            # 1+1=2 Logic: Only include if it is confirmed as an Open House
-                            if item.get("listingSubType", {}).get("is_openHouse", False):
+                        # We process the first 10 results to keep it fast and safe
+                        for item in results[:10]:
+                            zillow_url = item.get("detailUrl")
+                            
+                            # DEEP DIVE: Get Times and Brokerage
+                            info_url = "https://real-estate101.p.rapidapi.com/api/search/byurl"
+                            info_resp = requests.get(info_url, headers=headers, params={"url": zillow_url})
+                            
+                            # Respect API limits
+                            time.sleep(1) 
+
+                            start_t, end_t, broker = "N/A", "N/A", "N/A"
+                            
+                            if info_resp.status_code == 200:
+                                details = info_resp.json()
+                                # Extract times from schedule
+                                schedule = details.get("openHouseSchedule", [])
+                                if schedule:
+                                    start_t = schedule[0].get("startTime", "N/A")
+                                    end_t = schedule[0].get("endTime", "N/A")
                                 
-                                # Date Filtering (if dates were selected)
-                                # Note: Scrapers often require the secondary 'property' call for exact hours.
-                                # This block captures the house for the route if any date matches the broad search.
-                                addr = item.get("address", {})
-                                full_addr = f"{addr.get('street')}, {addr.get('city')}, {addr.get('state')} {addr.get('zipcode')}"
-                                
-                                lat_lon = item.get("latLong", {})
-                                lat, lon = lat_lon.get("latitude"), lat_lon.get("longitude")
-                                
-                                if lat and lon:
-                                    valid_coords.append(f"{lon},{lat}")
-                                    
-                                    houses.append({
-                                        "Address": full_addr,
-                                        "Price": item.get("price", "N/A"),
-                                        "DOM": item.get("daysOnZillow", "N/A"),
-                                        "Agent": item.get("brokerName", "N/A"),
-                                        "Zip Code": zcode
-                                    })
+                                # Extract Brokerage/Agent
+                                broker = details.get("brokerageName", details.get("attributionInfo", {}).get("brokerName", "N/A"))
+
+                            addr = item.get("address", {})
+                            full_addr = f"{addr.get('street')}, {addr.get('city')}, {addr.get('state')} {addr.get('zipcode')}"
+                            lat_lon = item.get("latLong", {})
+                            
+                            if lat_lon.get("latitude"):
+                                valid_coords.append(f"{lat_lon['longitude']},{lat_lon['latitude']}")
+                                houses.append({
+                                    "Start Time": start_t,
+                                    "End Time": end_t,
+                                    "Address": full_addr,
+                                    "Price": item.get("price", "N/A"),
+                                    "DOM": item.get("daysOnZillow", "N/A"),
+                                    "Agent/Brokerage": broker
+                                })
                 
                 if houses:
-                    # Route Optimization
+                    # Mapbox Routing
                     if len(valid_coords) > 1:
                         route_url = f"https://api.mapbox.com/optimized-trips/v1/mapbox/driving/{';'.join(valid_coords[:12])}?access_token={MAPBOX_KEY}"
                         r_resp = requests.get(route_url)
                         if r_resp.status_code == 200:
                             waypoints = r_resp.json().get("waypoints", [])
-                            # Reorder based on Mapbox optimization
                             houses = [houses[wp['waypoint_index']] for wp in sorted(waypoints, key=lambda x: x['waypoint_index'])]
-                            st.success("Route optimized for the selected Zip Codes!")
+                            st.success("Full data extracted and route optimized!")
 
                     st.dataframe(pd.DataFrame(houses), use_container_width=True)
-                    st.download_button("Download CSV", pd.DataFrame(houses).to_csv(index=False), "zip_route.csv", "text/csv")
                 else:
-                    st.warning("No open houses found in those specific zip codes today.")
+                    st.warning("No open houses found.")
 
             except Exception as e:
                 st.error(f"Error: {e}")
