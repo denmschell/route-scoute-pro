@@ -2,7 +2,6 @@ import streamlit as st
 import requests
 import pandas as pd
 import json
-from datetime import datetime
 
 # Page Config
 st.set_page_config(page_title="Route Scoute Pro", layout="wide")
@@ -35,13 +34,12 @@ if submit:
             
     if not zip_list:
         st.error("Please enter at least one Zip Code.")
-    elif not selected_dates:
-         st.error("Please select at least one Date.")
     else:
         with st.spinner("Fetching listings and extracting specific Open House times..."):
             try:
                 houses = []
                 valid_coords = []
+                raw_info_responses = [] # Added back for debugging the 2nd API call
                 
                 for zcode in zip_list:
                     # Call 1: Get the list of open houses
@@ -64,7 +62,7 @@ if submit:
                                 
                                 # Call 2: Ping Property-Info for the exact Start/End Times
                                 info_url = "https://real-estate101.p.rapidapi.com/api/property-info"
-                                info_qs = {"zpid": property_id} # zpid is the standard parameter for Zillow IDs
+                                info_qs = {"zpid": property_id} 
                                 
                                 info_resp = requests.get(info_url, headers=headers, params=info_qs)
                                 
@@ -74,87 +72,9 @@ if submit:
                                 
                                 if info_resp.status_code == 200:
                                     info_data = info_resp.json()
-                                    open_house_events = info_data.get("openHouseSchedule", [])
+                                    raw_info_responses.append(info_data) # Save for our debug log
                                     
-                                    # Fallback if API structures it under a different key
-                                    if not open_house_events and "resoFacts" in info_data:
-                                        open_house_events = info_data.get("resoFacts", {}).get("openHouseSchedule", [])
-                                        
-                                    for event in open_house_events:
-                                        event_start = event.get("startTime", "")
-                                        event_end = event.get("endTime", "")
-                                        
-                                        # Check if this specific event falls on any of the user's 3 chosen dates
-                                        if any(target_date in event_start for target_date in selected_dates):
-                                            date_matches = True
-                                            start_time = event_start
-                                            end_time = event_end
-                                            break
-                                
-                                # If the date matches OR we couldn't parse the deep info but know it's an open house
-                                if date_matches or not selected_dates: 
-                                    addr_dict = item.get("address", {})
-                                    full_address = f"{addr_dict.get('street', '')}, {addr_dict.get('city', '')}, {addr_dict.get('state', '')} {addr_dict.get('zipcode', '')}".strip(", ")
+                                    # Convert the entire property dump to a string to aggressively check for dates
+                                    info_str = json.dumps(info_data).lower()
                                     
-                                    price = item.get("price", "N/A")
-                                    dom = item.get("daysOnZillow", "N/A")
-                                    
-                                    lat_long = item.get("latLong", {})
-                                    lat = lat_long.get("latitude")
-                                    lon = lat_long.get("longitude")
-                                    
-                                    if lat and lon:
-                                        coord_str = f"{lon},{lat}"
-                                        if coord_str not in valid_coords: 
-                                            valid_coords.append(coord_str)
-                                            
-                                            houses.append({
-                                                "Start Time": start_time.split(" ")[1][:5] if " " in start_time else start_time,
-                                                "End Time": end_time.split(" ")[1][:5] if " " in end_time else end_time,
-                                                "Start-End": f"{start_time} to {end_time}",
-                                                "Address": full_address,
-                                                "Saves/Likes": "N/A",
-                                                "DOM": dom,
-                                                "Current Price": price,
-                                                "Agent & Brokerage": "N/A"
-                                            })
-                
-                if houses:
-                    st.success(f"Extracted {len(houses)} Open Houses matching your dates!")
-                    
-                    # Call 3: Optimize Route using Mapbox API
-                    if len(valid_coords) > 1 and len(valid_coords) <= 12:
-                        coord_string = ";".join(valid_coords)
-                        mapbox_url = f"https://api.mapbox.com/optimized-trips/v1/mapbox/driving/{coord_string}?access_token={MAPBOX_KEY}"
-                        
-                        route_resp = requests.get(mapbox_url)
-                        if route_resp.status_code == 200:
-                            route_data = route_resp.json()
-                            waypoints = route_data.get("waypoints", [])
-                            sorted_houses = [None] * len(houses)
-                            
-                            for idx, wp in enumerate(waypoints):
-                                original_index = wp.get("waypoint_index")
-                                sorted_houses[original_index] = houses[idx]
-                                
-                            houses = [h for h in sorted_houses if h is not None]
-                            st.success("Route perfectly optimized for minimal drive time!")
-                        else:
-                            st.warning("Mapbox routing failed. Displaying unoptimized list.")
-
-                    elif len(valid_coords) > 12:
-                        st.warning("Mapbox optimization is limited to 12 waypoints per request. Displaying unoptimized list.")
-                    elif len(valid_coords) == 1:
-                        st.info("Only 1 property matched your dates. No routing necessary.")
-
-                    # Output Table & CSV
-                    df = pd.DataFrame(houses)
-                    st.dataframe(df, use_container_width=True)
-                    
-                    csv = df.to_csv(index=False).encode('utf-8')
-                    st.download_button("Download Route as CSV", data=csv, file_name="route_scoute_optimized.csv", mime="text/csv")
-                else:
-                    st.warning("No open houses matched your exact date selections. Try removing dates or checking upcoming weekends.")
-
-            except Exception as e:
-                st.error(f"An error occurred: {e}")
+                                    if not selected_dates or any(target_date in
