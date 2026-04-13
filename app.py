@@ -9,86 +9,96 @@ st.title("Route Scoute Pro 🚗")
 st.write("Generate an optimized open house driving route.")
 
 # Securely load API Keys
-REPLIERS_KEY = st.secrets["REPLIERS_API_KEY"]
+RAPID_KEY = st.secrets["RAPID_API_KEY"]
 MAPBOX_KEY = st.secrets["MAPBOX_API_KEY"]
 
 # Input Form
 with st.form("input_form"):
-    col1, col2 = st.columns(2)
-    with col1:
-        zip_code = st.text_input("Zip Code", value="99201")
-    with col2:
-        target_date = st.date_input("Date")
+    st.write("### Search Parameters")
+    # Multiple Zip Codes
+    zip_codes_input = st.text_input("Zip Codes (separate by commas)", value="99201, 99202")
+    
+    # 3 Date Options
+    col1, col2, col3 = st.columns(3)
+    with col1: date_1 = st.date_input("Date Option 1", value=None)
+    with col2: date_2 = st.date_input("Date Option 2", value=None)
+    with col3: date_3 = st.date_input("Date Option 3", value=None)
     
     submit = st.form_submit_button("Generate Optimized Route")
 
 if submit:
-    if not zip_code:
-        st.error("Please enter a Zip Code.")
+    zip_list = [z.strip() for z in zip_codes_input.split(",") if z.strip()]
+    
+    # Collect all selected dates
+    selected_dates = []
+    for d in [date_1, date_2, date_3]:
+        if d:
+            selected_dates.append(d.strftime("%Y-%m-%d"))
+            
+    if not zip_list:
+        st.error("Please enter at least one Zip Code.")
+    elif not selected_dates:
+         st.error("Please select at least one Date.")
     else:
-        with st.spinner("Fetching MLS data and optimizing route..."):
+        with st.spinner("Fetching data and optimizing route..."):
             try:
-                # 1. Fetch Data from Repliers API
-                formatted_date = target_date.strftime("%Y-%m-%d")
+                houses = []
+                valid_coords = []
                 
-                headers = {"REPLIERS-API-KEY": REPLIERS_KEY}
-                repliers_url = f"https://api.repliers.io/listings?zip={zip_code}&minOpenHouseDate={formatted_date}&maxOpenHouseDate={formatted_date}&status=A"
-                
-                response = requests.get(repliers_url, headers=headers)
-                response.raise_for_status()
-                data = response.json()
-                
-                listings = data.get("listings", [])
-                
-                if not listings:
-                    st.warning(f"No open houses found for {zip_code} on {formatted_date}.")
-                else:
-                    # Parse and format the raw MLS data
-                    houses = []
-                    valid_coords = []
+                # 1. Fetch Data from RapidAPI for each Zip Code
+                for zcode in zip_list:
+                    url = "https://us-housing-market-data1.p.rapidapi.com/propertyExtendedSearch"
+                    querystring = {"location": zcode, "status_type": "ForSale", "isOpenHousesOnly": "true"}
+                    headers = {
+                        "X-RapidAPI-Key": RAPID_KEY,
+                        "X-RapidAPI-Host": "us-housing-market-data1.p.rapidapi.com"
+                    }
                     
-                    for item in listings:
-                        address = item.get("address", {})
-                        full_address = f"{address.get('streetNumber', '')} {address.get('streetName', '')}, {address.get('city', '')}"
+                    response = requests.get(url, headers=headers, params=querystring)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        props = data.get("props", [])
                         
-                        # Extract Open House Times
-                        open_houses = item.get("openHouses", [{}])
-                        start_time = open_houses[0].get("startTime", "N/A") if open_houses else "N/A"
-                        end_time = open_houses[0].get("endTime", "N/A") if open_houses else "N/A"
-                        
-                        # Calculate Duration if times exist
-                        duration = "N/A"
-                        if start_time != "N/A" and end_time != "N/A":
-                            fmt = "%Y-%m-%dT%H:%M:%S.%fZ"
-                            try:
-                                t1 = datetime.strptime(start_time, fmt)
-                                t2 = datetime.strptime(end_time, fmt)
-                                duration = str(t2 - t1)
-                                start_time = t1.strftime("%H:%M")
-                                end_time = t2.strftime("%H:%M")
-                            except:
-                                pass
-
-                        details = item.get("details", {})
-                        list_price = item.get("listPrice", 0)
-                        
-                        lat = item.get("map", {}).get("latitude")
-                        lon = item.get("map", {}).get("longitude")
-                        
-                        if lat and lon:
-                            valid_coords.append(f"{lon},{lat}")
-
-                        houses.append({
-                            "Start Time": start_time,
-                            "End Time": end_time,
-                            "Duration": duration,
-                            "Address": full_address.strip(),
-                            "DOM": item.get("daysOnMarket", "N/A"),
-                            "Current Price": f"${list_price:,.0f}",
-                            "Price Change +/-": "N/A", # Often requires historical query, set to N/A for strictly 1+1=2 current query
-                            "Agent & Brokerage": f"{item.get('agents', [{}])[0].get('name', 'Unknown')} - {item.get('office', {}).get('name', 'Unknown')}"
-                        })
-
+                        for item in props:
+                            # Extract basic info
+                            address = item.get("address", "Unknown Address")
+                            price = item.get("price", 0)
+                            dom = item.get("daysOnZillow", "N/A")
+                            agent = item.get("brokerName", "Unknown Broker")
+                            
+                            lat = item.get("latitude")
+                            lon = item.get("longitude")
+                            
+                            # Filter based on Open House Dates selected by the user
+                            open_house_data = item.get("openHouseDetails", [])
+                            for oh in open_house_data:
+                                oh_date_str = oh.get("openHouseDate", "") # e.g. "2026-04-18"
+                                
+                                # Check if this open house matches any of our 3 dates
+                                if any(target_date in oh_date_str for target_date in selected_dates):
+                                    start_time = oh.get("openHouseStartTime", "N/A")
+                                    end_time = oh.get("openHouseEndTime", "N/A")
+                                    
+                                    if lat and lon:
+                                        coord_str = f"{lon},{lat}"
+                                        if coord_str not in valid_coords: # Basic deduplication
+                                            valid_coords.append(coord_str)
+                                            
+                                            houses.append({
+                                                "Start Time": start_time,
+                                                "End Time": end_time,
+                                                "Start-End": f"{start_time} - {end_time}",
+                                                "Address": address,
+                                                "Saves/Likes": "N/A",
+                                                "DOM": dom,
+                                                "Current Price": f"${price:,.0f}",
+                                                "Agent & Brokerage": agent
+                                            })
+                
+                if not houses:
+                    st.warning("No open houses found matching your exact zip codes and dates.")
+                else:
                     # 2. Optimize Route using Mapbox API
                     if len(valid_coords) > 1 and len(valid_coords) <= 12:
                         coord_string = ";".join(valid_coords)
@@ -98,7 +108,6 @@ if submit:
                         route_resp.raise_for_status()
                         route_data = route_resp.json()
                         
-                        # Sort our dataframe based on Mapbox's optimized waypoint index
                         waypoints = route_data.get("waypoints", [])
                         sorted_houses = [None] * len(houses)
                         
@@ -106,11 +115,10 @@ if submit:
                             original_index = wp.get("waypoint_index")
                             sorted_houses[original_index] = houses[idx]
                             
-                        # Clean up any missed mappings
                         houses = [h for h in sorted_houses if h is not None]
 
                     elif len(valid_coords) > 12:
-                        st.warning("Mapbox optimization is limited to 12 waypoints per request on standard tier. Displaying unoptimized list.")
+                        st.warning("Mapbox optimization is limited to 12 waypoints per request. Displaying unoptimized list.")
 
                     # 3. Display Output and CSV Download
                     df = pd.DataFrame(houses)
@@ -121,7 +129,7 @@ if submit:
                     st.download_button(
                         label="Download Route as CSV",
                         data=csv,
-                        file_name=f"route_scoute_{zip_code}_{formatted_date}.csv",
+                        file_name=f"route_scoute_optimized.csv",
                         mime="text/csv",
                     )
 
