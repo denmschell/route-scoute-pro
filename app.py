@@ -15,7 +15,7 @@ MAPBOX_KEY = st.secrets["MAPBOX_API_KEY"]
 # Input Form
 with st.form("input_form"):
     st.write("### Search Parameters")
-    zip_codes_input = st.text_input("Zip Codes (separate by commas)", value="99223")
+    zip_codes_input = st.text_input("Locations (Zip or City-State)", value="spokane-wa")
     
     col1, col2, col3 = st.columns(3)
     with col1: date_1 = st.date_input("Date Option 1", value=None)
@@ -33,13 +33,13 @@ if submit:
             selected_dates.append(d.strftime("%Y-%m-%d"))
             
     if not zip_list:
-        st.error("Please enter at least one Zip Code.")
+        st.error("Please enter at least one Location.")
     else:
         with st.spinner("Fetching listings and extracting specific Open House times..."):
             try:
                 houses = []
                 valid_coords = []
-                raw_info_responses = [] # Added back for debugging the 2nd API call
+                debug_log = [] # Updated debug log
                 
                 for zcode in zip_list:
                     # Call 1: Get the list of open houses
@@ -53,7 +53,9 @@ if submit:
                     search_resp = requests.get(search_url, headers=headers, params=search_qs)
                     
                     if search_resp.status_code == 200:
-                        results = search_resp.json().get("results", [])
+                        search_data = search_resp.json()
+                        debug_log.append({"STEP 1: SEARCH RESPONSE FOR " + zcode: search_data})
+                        results = search_data.get("results", [])
                         
                         for item in results:
                             sub_type = item.get("listingSubType", {})
@@ -72,19 +74,16 @@ if submit:
                                 
                                 if info_resp.status_code == 200:
                                     info_data = info_resp.json()
-                                    raw_info_responses.append(info_data) # Save for our debug log
+                                    debug_log.append({f"STEP 2: PROPERTY INFO FOR {property_id}": info_data})
                                     
-                                    # Convert the entire property dump to a string to aggressively check for dates
                                     info_str = json.dumps(info_data).lower()
                                     
                                     if not selected_dates or any(target_date in info_str for target_date in selected_dates):
                                         date_matches = True
                                         
-                                # If the date matches OR no dates were selected
                                 if date_matches: 
                                     addr_dict = item.get("address", {})
                                     full_address = f"{addr_dict.get('street', '')}, {addr_dict.get('city', '')}, {addr_dict.get('state', '')} {addr_dict.get('zipcode', '')}".strip(", ")
-                                    
                                     price = item.get("price", "N/A")
                                     dom = item.get("daysOnZillow", "N/A")
                                     
@@ -96,7 +95,6 @@ if submit:
                                         coord_str = f"{lon},{lat}"
                                         if coord_str not in valid_coords: 
                                             valid_coords.append(coord_str)
-                                            
                                             houses.append({
                                                 "Start Time": start_time,
                                                 "End Time": end_time,
@@ -109,40 +107,28 @@ if submit:
                 
                 if houses:
                     st.success(f"Extracted {len(houses)} Open Houses!")
-                    
-                    # Call 3: Optimize Route using Mapbox API
                     if len(valid_coords) > 1 and len(valid_coords) <= 12:
                         coord_string = ";".join(valid_coords)
                         mapbox_url = f"https://api.mapbox.com/optimized-trips/v1/mapbox/driving/{coord_string}?access_token={MAPBOX_KEY}"
-                        
                         route_resp = requests.get(mapbox_url)
                         if route_resp.status_code == 200:
                             route_data = route_resp.json()
                             waypoints = route_data.get("waypoints", [])
                             sorted_houses = [None] * len(houses)
-                            
                             for idx, wp in enumerate(waypoints):
                                 original_index = wp.get("waypoint_index")
                                 sorted_houses[original_index] = houses[idx]
-                                
                             houses = [h for h in sorted_houses if h is not None]
                             st.success("Route perfectly optimized!")
-                        else:
-                            st.warning("Mapbox routing failed. Displaying unoptimized list.")
-
-                    # Output Table & CSV
                     df = pd.DataFrame(houses)
                     st.dataframe(df, use_container_width=True)
-                    
                     csv = df.to_csv(index=False).encode('utf-8')
                     st.download_button("Download Route as CSV", data=csv, file_name="route_scoute_optimized.csv", mime="text/csv")
                 else:
                     st.warning("No open houses matched your exact date selections.")
 
-                # DEBUG EXPANDER RESTORED
                 with st.expander("🛠️ Debug: Show Raw API Data (Click to Expand)"):
-                    st.write("This is the deep property info from the API. Please copy a chunk of this so I can see the exact time format:")
-                    st.json(raw_info_responses)
+                    st.json(debug_log)
 
             except Exception as e:
                 st.error(f"An error occurred: {e}")
