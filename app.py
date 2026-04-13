@@ -30,14 +30,14 @@ if submit:
     if not zip_list:
         st.error("Please enter at least one Zip Code.")
     else:
-        with st.spinner("Executing Deep Search... This takes ~15 seconds."):
+        with st.spinner("Step 1: Searching... Step 2: Fetching Times..."):
             try:
                 houses = []
                 valid_coords = []
                 system_errors = []
 
                 for zcode in zip_list:
-                    # STEP 1: Search
+                    # STEP 1: Search for IDs
                     search_url = "https://real-estate101.p.rapidapi.com/api/search"
                     headers = {"x-rapidapi-host": "real-estate101.p.rapidapi.com", "x-rapidapi-key": RAPID_KEY}
                     search_resp = requests.get(search_url, headers=headers, params={"location": zcode, "isOpenHousesOnly": "true"})
@@ -45,37 +45,36 @@ if submit:
                     if search_resp.status_code == 200:
                         results = search_resp.json().get("results", [])
                         
-                        for item in results[:8]: # Limit to 8 houses for stability
+                        for item in results[:6]: # Limited to 6 for speed & stability
                             zpid = item.get("id")
                             z_url = item.get("detailUrl")
                             
-                            # STEP 2: Deep Dive (Try two different endpoints)
-                            # Primary: property-info
-                            info_url = "https://real-estate101.p.rapidapi.com/api/property"
+                            # STEP 2: Deep Dive (Trying the Property-Info endpoint)
+                            info_url = "https://real-estate101.p.rapidapi.com/api/property-info"
                             info_resp = requests.get(info_url, headers=headers, params={"propertyId": zpid})
                             
-                            time.sleep(1) # Crucial: prevent API blocking
+                            # If the ID search fails, try searching by the URL as a backup
+                            if info_resp.status_code != 200:
+                                backup_url = "https://real-estate101.p.rapidapi.com/api/search/byurl"
+                                info_resp = requests.get(backup_url, headers=headers, params={"url": z_url})
                             
-                            start_t, end_t, agent_broker = "N/A", "N/A", "N/A"
+                            time.sleep(1.5) # Extra delay to ensure the server processes the request
+                            
+                            start_t, end_t, broker = "N/A", "N/A", "N/A"
                             
                             if info_resp.status_code == 200:
                                 details = info_resp.json()
-                                
-                                # Extraction
+                                # Try to find the schedule
                                 schedule = details.get("openHouseSchedule", details.get("openHouses", []))
-                                if not schedule and "resoFacts" in details:
-                                    schedule = details["resoFacts"].get("openHouseSchedule", [])
-                                
                                 if schedule and isinstance(schedule, list):
                                     start_t = str(schedule[0].get("startTime", "N/A"))
                                     end_t = str(schedule[0].get("endTime", "N/A"))
-
-                                attr = details.get("attributionInfo", {})
-                                agent_broker = details.get("brokerageName", attr.get("brokerName", "N/A"))
+                                
+                                # Try to find the broker
+                                broker = details.get("brokerageName", details.get("attributionInfo", {}).get("brokerName", "N/A"))
                             else:
-                                system_errors.append(f"Deep Search failed for {zpid} with Error: {info_resp.status_code}")
+                                system_errors.append(f"Failed {zpid}: Error {info_resp.status_code}")
 
-                            # Map Data
                             addr = item.get("address", {})
                             full_addr = f"{addr.get('street')}, {addr.get('city')}, {addr.get('state')} {addr.get('zipcode')}"
                             lat_lon = item.get("latLong", {})
@@ -87,28 +86,10 @@ if submit:
                                     "End Time": end_t,
                                     "Address": full_addr,
                                     "Price": item.get("price", "N/A"),
-                                    "DOM": item.get("daysOnZillow", "N/A"),
-                                    "Agent/Brokerage": agent_broker
+                                    "Agent/Brokerage": broker
                                 })
                 
                 if houses:
-                    # STEP 3: Optimized Routing
+                    # STEP 3: Route Re-ordering
                     if len(valid_coords) > 1:
-                        route_url = f"https://api.mapbox.com/optimized-trips/v1/mapbox/driving/{';'.join(valid_coords[:12])}?access_token={MAPBOX_KEY}"
-                        r_resp = requests.get(route_url)
-                        if r_resp.status_code == 200:
-                            waypoints = r_resp.json().get("waypoints", [])
-                            # SORT logic: use the 'waypoint_index' to reorder the houses list
-                            houses = [houses[wp['waypoint_index']] for wp in sorted(waypoints, key=lambda x: x['waypoint_index'])]
-                            st.success("Route optimized based on drive distance!")
-
-                    st.dataframe(pd.DataFrame(houses), use_container_width=True)
-                else:
-                    st.warning("No open houses found. Check the System Errors below.")
-
-                with st.expander("🛠️ System Log / Error Tracker"):
-                    st.write("If times are missing, tell me which error code appears here:")
-                    st.write(system_errors)
-
-            except Exception as e:
-                st.error(f"Error: {e}")
+                        route_url = f"https://api.mapbox.com/optimized-trips/v1/mapbox/driving/{';'.join(valid_coords[:1
